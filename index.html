@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Portal Soal Siswa</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+:root{--c:#b91c1c;--bg:#f5f5f4;--card:#ffffff;--tx:#1c1917;--mut:#6b7280;--bd:#e7e5e4}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#1c1917;--card:#292524;--tx:#f5f5f4;--mut:#a8a29e;--bd:#44403c}}
+:root[data-theme="dark"]{--bg:#1c1917;--card:#292524;--tx:#f5f5f4;--mut:#a8a29e;--bd:#44403c}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--tx);min-height:100vh;background-size:cover;background-position:center;background-attachment:fixed}
+body.hasbg::before{content:"";position:fixed;inset:0;background:rgba(255,255,255,.85);z-index:0}
+@media (prefers-color-scheme:dark){body.hasbg::before{background:rgba(28,25,23,.88)}}
+.wrap{position:relative;z-index:1;display:flex;min-height:100vh}
+aside{width:210px;background:var(--card);border-right:1px solid var(--bd);padding:16px 12px;display:flex;flex-direction:column;gap:4px;padding-top:calc(16px + env(safe-area-inset-top,0px))}
+aside h3{font-size:14px;margin:0 0 12px;color:var(--c)}
+button.nav{background:none;border:0;text-align:left;padding:9px 10px;border-radius:8px;color:var(--tx);cursor:pointer;font:inherit}
+button.nav.on,button.nav:hover{background:var(--bg)}
+main{flex:1;padding:20px;max-width:900px;overflow-x:auto;min-width:0}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:16px;margin-bottom:14px}
+h2{margin:0 0 12px;font-size:20px}
+label{font-size:13px;color:var(--mut)}
+input,textarea{width:100%;padding:9px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);color:var(--tx);font:inherit;margin:4px 0 10px}
+textarea{min-height:120px;font-family:ui-monospace,monospace;font-size:13px}
+button.btn{background:var(--c);color:#fff;border:0;border-radius:8px;padding:9px 14px;cursor:pointer;font:inherit;margin:0 6px 6px 0}
+button.ghost{background:transparent;color:var(--tx);border:1px solid var(--bd)}
+button.danger{background:#7f1d1d}
+.row{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--bd);flex-wrap:wrap}
+.tag{font-size:12px;padding:3px 8px;border-radius:99px;background:var(--bg);color:var(--mut);white-space:nowrap}
+.tag.on{background:#dcfce7;color:#166534}
+.tag.off{background:#fee2e2;color:#991b1b}
+.login{max-width:360px;margin:12vh auto;position:relative;z-index:1;padding:0 12px}
+.msg{font-size:13px;color:var(--c);min-height:18px;margin-top:6px}
+.sub{font-size:13px;color:var(--mut)}
+@media (max-width:640px){.wrap{flex-direction:column}aside{width:100%;flex-direction:row;flex-wrap:wrap;align-items:center;position:sticky;top:0;z-index:2}aside h3{width:100%;margin:0}aside .sp{display:none}}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+const ADMIN_PASS = 'admin123'; // ganti password ini sebelum digunakan
+const DEFAULT_BG = '/_blob/2e5a868e574e9af1b320223148e0f287'; // foto sekolah, tampil otomatis
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const SESS = 'portal_soal_sess';
+
+let S = {students: [], soal: [], logs: [], bg: '', izin: [], laporan: []};
+let me = null, page = 'home', doc = null, loginTab = 'siswa', editId = null;
+
+function fmt(t){ return t ? new Date(t).toLocaleString('id-ID', {dateStyle:'medium', timeStyle:'short'}) : '-'; }
+function status(s){
+  const n = Date.now(), b = new Date(s.buka).getTime(), t = new Date(s.tutup).getTime();
+  if (n < b) return ['Belum dibuka', 'off'];
+  if (n > t) return ['Ditutup', 'off'];
+  return ['Berlangsung', 'on'];
+}
+function addLog(e){
+  S.logs.push({...e, t: Date.now()});
+  if (S.logs.length > 800) S.logs = S.logs.slice(-800);
+}
+async function save(){
+  if (!doc) return;
+  try { await doc.set(S); } catch (e) { alert('Gagal menyimpan: ' + (e.message || e)); }
+}
+function applyBg(){
+  const bg = S.bg || DEFAULT_BG;
+  document.body.style.backgroundImage = bg ? `url("${bg}")` : '';
+  document.body.classList.toggle('hasbg', !!bg);
+}
+
+function render(){
+  applyBg();
+  if (!me) return renderLogin();
+  const admin = me.role === 'admin';
+  if (!admin && page !== 'home') page = 'home';
+  const menu = admin
+    ? [['home','Beranda'],['soal','Input Soal'],['import','Import Siswa'],['monitor','Daftar Login & Kerja']]
+    : [['home','Beranda']];
+  $('#app').innerHTML = `<div class="wrap">
+    <aside>
+      <h3>${admin ? 'Panel Admin' : 'Portal Siswa'}</h3>
+      ${menu.map(([k,l]) => `<button class="nav ${page===k?'on':''}" onclick="go('${k}')">${l}</button>`).join('')}
+      <div class="sp" style="flex:1"></div>
+      <div class="sub" style="padding:8px 10px">${esc(me.nama)}${me.kelas ? ' · ' + esc(me.kelas) : ''}</div>
+      <button class="nav" onclick="logout()">Keluar</button>
+    </aside>
+    <main id="pg"></main></div>`;
+  const pages = {home: pHome, soal: pSoal, import: pImport, monitor: pMonitor};
+  (pages[page] || pHome)();
+}
+
+function renderLogin(){
+  $('#app').innerHTML = `<div class="login"><div class="card">
+    <h2>Portal Soal</h2>
+    <div class="row" style="justify-content:flex-start;border:0;padding:0 0 10px">
+      <button class="btn ${loginTab==='siswa'?'':'ghost'}" onclick="loginTab='siswa';render()">Siswa</button>
+      <button class="btn ${loginTab==='admin'?'':'ghost'}" onclick="loginTab='admin';render()">Admin</button>
+    </div>
+    ${loginTab === 'siswa'
+      ? `<label>NISN</label><input id="u" inputmode="numeric" placeholder="Masukkan NISN" onkeydown="if(event.key==='Enter')loginSiswa()">
+         <button class="btn" style="width:100%" onclick="loginSiswa()">Masuk</button>`
+      : `<label>Password Admin</label><input id="u" type="password" onkeydown="if(event.key==='Enter')loginAdmin()">
+         <button class="btn" style="width:100%" onclick="loginAdmin()">Masuk</button>`}
+    ${doc ? '' : '<p class="sub">Penyimpanan belum tersedia, data hanya sementara.</p>'}
+    <div class="msg" id="msg"></div>
+  </div></div>`;
+}
+
+function loginSiswa(){
+  const n = $('#u').value.trim();
+  const s = S.students.find(x => String(x.nisn) === n);
+  if (!s) return $('#msg').textContent = 'NISN tidak terdaftar. Hubungi admin.';
+  me = {role:'siswa', nisn:s.nisn, nama:s.nama, kelas:s.kelas};
+  addLog({type:'login', nisn:s.nisn, nama:s.nama, kelas:s.kelas});
+  save(); localStorage.setItem(SESS, JSON.stringify(me));
+  page = 'home'; render();
+}
+function loginAdmin(){
+  if ($('#u').value !== ADMIN_PASS) return $('#msg').textContent = 'Password salah.';
+  me = {role:'admin', nama:'Admin'};
+  localStorage.setItem(SESS, JSON.stringify(me));
+  page = 'home'; render();
+}
+function logout(){ me = null; localStorage.removeItem(SESS); render(); }
+function go(k){ page = k; editId = null; render(); }
+
+function sudahBuka(nisn, s){
+  return (S.logs || []).some(l => l.type === 'soal' && String(l.nisn) === String(nisn) && (l.soalId ? l.soalId === s.id : l.soal === s.judul));
+}
+function laporSoal(id){
+  const s = S.soal.find(x => x.id === id);
+  if (!s) return;
+  S.laporan = (S.laporan || []).filter(x => !(String(x.nisn) === String(me.nisn) && x.soalId === id));
+  S.laporan.push({nisn: me.nisn, nama: me.nama, kelas: me.kelas || '', soalId: id, soal: s.judul, t: Date.now()});
+  save(); render();
+  alert('Laporan terkirim ke admin.');
+}
+function tombolSiswa(s, c, bisa){
+  if (me.role === 'admin') return bisa ? `<button class="btn" style="margin-top:10px" onclick="bukaSoal('${s.id}')">Buka Soal</button>` : '';
+  if (c !== 'on') return '';
+  const sudah = sudahBuka(me.nisn, s), izin = (S.izin || []).includes(String(me.nisn));
+  if (!sudah || izin) return `<button class="btn" style="margin-top:10px" onclick="bukaSoal('${s.id}')">Buka Soal${sudah ? ' (diizinkan admin)' : ''}</button>`;
+  const lapor = (S.laporan || []).some(x => String(x.nisn) === String(me.nisn) && x.soalId === s.id);
+  return `<p class="sub" style="margin:10px 0 0">Anda sudah pernah membuka soal ini.</p><button class="btn ghost" style="margin-top:6px" ${lapor ? 'disabled' : ''} onclick="laporSoal('${s.id}')">${lapor ? 'Sudah dilaporkan ke admin' : 'Lapor Admin untuk buka lagi'}</button>`;
+}
+function pHome(){
+  const soal = [...S.soal].sort((a,b) => new Date(a.buka) - new Date(b.buka));
+  $('#pg').innerHTML = `<h2>Akses Link Soal</h2>
+    <p class="sub">Klik tombol soal saat waktu berlangsung. Soal hanya dapat dibuka pada rentang waktu yang ditentukan.</p>
+    ${soal.length ? soal.map(s => {
+      const [l, c] = status(s);
+      const bisa = c === 'on' || me.role === 'admin';
+      return `<div class="card">
+        <div class="row" style="border:0;padding:0">
+          <div><b>${esc(s.judul)}</b><br><span class="sub">Buka: ${fmt(s.buka)} · Tutup: ${fmt(s.tutup)}</span></div>
+          <span class="tag ${c}">${l}</span>
+        </div>
+        ${tombolSiswa(s, c, bisa)}
+      </div>`;
+    }).join('') : '<div class="card">Belum ada soal.</div>'}`;
+}
+
+function bukaSoal(id){
+  const s = S.soal.find(x => x.id === id);
+  if (!s) return;
+  const [, c] = status(s);
+  if (c !== 'on' && me.role !== 'admin') return alert('Soal belum dibuka atau sudah ditutup.');
+  if (me.role === 'siswa') {
+    const sudah = sudahBuka(me.nisn, s), izin = (S.izin || []).includes(String(me.nisn));
+    if (sudah && !izin) return alert('Anda sudah pernah membuka soal ini. Untuk membuka lagi, lapor ke admin.');
+    if (sudah) S.izin = S.izin.filter(x => x !== String(me.nisn));
+    addLog({type:'soal', nisn:me.nisn, nama:me.nama, kelas:me.kelas, soal:s.judul, soalId:s.id});
+    save(); render();
+  }
+  window.open(s.link, '_blank', 'noopener');
+}
+
+function pSoal(){
+  const e = S.soal.find(x => x.id === editId) || {judul:'', link:'', buka:'', tutup:''};
+  $('#pg').innerHTML = `<h2>${editId ? 'Edit Soal' : 'Input Soal'}</h2>
+    <div class="card">
+      <label>Judul soal</label><input id="sj" value="${esc(e.judul)}">
+      <label>Link GitHub soal</label><input id="sl" placeholder="https://github.com/..." value="${esc(e.link)}">
+      <label>Waktu dibuka</label><input id="sb" type="datetime-local" value="${e.buka}">
+      <label>Waktu ditutup</label><input id="st" type="datetime-local" value="${e.tutup}">
+      <button class="btn" onclick="simpanSoal()">${editId ? 'Simpan Perubahan' : 'Tambah Soal'}</button>
+      ${editId ? '<button class="btn ghost" onclick="editId=null;render()">Batal</button>' : ''}
+      <div class="msg" id="msg"></div>
+    </div>
+    <h2>Daftar Soal</h2>
+    ${S.soal.length ? S.soal.map(s => {
+      const [l, c] = status(s);
+      return `<div class="row">
+        <div><b>${esc(s.judul)}</b> <span class="tag ${c}">${l}</span><br><span class="sub">${fmt(s.buka)} – ${fmt(s.tutup)}</span></div>
+        <div><button class="btn ghost" onclick="editId='${s.id}';render()">Edit</button><button class="btn danger" onclick="hapusSoal('${s.id}')">Hapus</button></div>
+      </div>`;
+    }).join('') : '<p class="sub">Belum ada soal.</p>'}`;
+}
+function simpanSoal(){
+  const j = $('#sj').value.trim(), l = $('#sl').value.trim(), b = $('#sb').value, t = $('#st').value;
+  if (!j || !l || !b || !t) return $('#msg').textContent = 'Lengkapi semua kolom.';
+  if (!/^https:\/\//.test(l)) return $('#msg').textContent = 'Link harus diawali https://';
+  if (new Date(t) <= new Date(b)) return $('#msg').textContent = 'Waktu tutup harus setelah waktu buka.';
+  if (editId) { Object.assign(S.soal.find(x => x.id === editId), {judul:j, link:l, buka:b, tutup:t}); editId = null; }
+  else S.soal.push({id: Date.now().toString(36), judul:j, link:l, buka:b, tutup:t});
+  save(); render();
+}
+function hapusSoal(id){
+  if (!confirm('Hapus soal ini?')) return;
+  S.soal = S.soal.filter(x => x.id !== id);
+  save(); render();
+}
+
+function parseImport(text){
+  return importRows([text.split(/\r?\n/).map(r => r.split(/[,;\t]/))]);
+}
+function importRows(sheets){
+  const clean = v => String(v ?? '').trim().replace(/^"|"$/g, '');
+  let add = 0, skip = 0, info = '';
+  for (const rows of sheets) {
+    let iN = -1, iM = -1, iK = -1, start = 0;
+    rows.slice(0, 15).forEach((r, ri) => {
+      if (iN >= 0) return;
+      const h = r.map(x => clean(x).toLowerCase());
+      const n = h.findIndex(x => x.includes('nisn'));
+      if (n >= 0) { iN = n; iM = h.findIndex(x => x.includes('nama')); iK = h.findIndex(x => x.includes('kelas')); start = ri + 1; }
+    });
+    if (iN < 0) { iN = 0; iM = 1; iK = 2; }
+    if (!info) info = `Kolom terbaca: NISN = kolom ${iN + 1}, Nama = kolom ${iM + 1}, Kelas = kolom ${iK + 1}.`;
+    for (const r of rows.slice(start)) {
+      if (!r || !r.some(x => clean(x))) continue;
+      let nisn = clean(r[iN]).replace(/\.0+$/, '').replace(/\D/g, '');
+      if (nisn.length >= 6 && nisn.length < 10) nisn = nisn.padStart(10, '0');
+      const nama = iM >= 0 ? clean(r[iM]) : '';
+      const kelas = iK >= 0 ? clean(r[iK]) : '';
+      if (nisn.length !== 10 || !nama) { skip++; continue; }
+      const i = S.students.findIndex(x => x.nisn === nisn);
+      if (i >= 0) S.students[i] = {nisn, nama, kelas};
+      else { S.students.push({nisn, nama, kelas}); add++; }
+    }
+  }
+  save();
+  const out = `${add} siswa baru ditambahkan, ${skip} baris dilewati. ${info}`;
+  setTimeout(() => { render(); $('#msg').textContent = out; }, 0);
+  return out;
+}
+function pImport(){
+  $('#pg').innerHTML = `<h2>Import Siswa</h2>
+    <div class="card">
+      <label>Pilih file Excel (.xlsx / .xls) atau .csv</label>
+      <input type="file" accept=".xlsx,.xls,.csv,.txt" onchange="bacaFile(this.files[0])">
+      <p class="sub">Cukup satu file yang berisi kolom NISN, Nama, dan Kelas. Judul kolom boleh ada atau tidak. Siswa yang sudah ada akan diperbarui.</p>
+      <div class="msg" id="msg"></div>
+    </div>
+    <div class="card"><b>Total siswa: ${S.students.length}</b>
+      <div style="margin-top:8px"><button class="btn danger" onclick="if(confirm('Hapus semua data siswa?')){S.students=[];save();render()}">Hapus semua siswa</button></div>${S.students.length ? '<div style="margin-top:12px;max-height:420px;overflow:auto">' + [...S.students].sort((a, b) => (a.kelas || '').localeCompare(b.kelas || '') || (a.nama || '').localeCompare(b.nama || '')).map((s, i) => `<div class="row"><div><b>${i + 1}. ${esc(s.nama)}</b><br><span class="sub">NISN ${esc(s.nisn)}</span></div><span class="tag">${esc(s.kelas || '-')}</span></div>`).join('') + '</div>' : ''}
+    </div>`;
+}
+function unesc(s){ return s.replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&apos;/g,"'").replace(/&amp;/g,'&'); }
+async function readXlsx(buf){
+  const dv = new DataView(buf), u8 = new Uint8Array(buf), dec = new TextDecoder();
+  let e = -1;
+  for (let i = u8.length - 22; i >= 0; i--) if (dv.getUint32(i, true) === 0x06054b50) { e = i; break; }
+  if (e < 0) throw new Error('bukan file xlsx');
+  let p = dv.getUint32(e + 16, true);
+  const files = {};
+  for (let k = 0, n = dv.getUint16(e + 10, true); k < n; k++) {
+    const method = dv.getUint16(p + 10, true), csize = dv.getUint32(p + 20, true);
+    const nlen = dv.getUint16(p + 28, true), xlen = dv.getUint16(p + 30, true), clen = dv.getUint16(p + 32, true);
+    const loff = dv.getUint32(p + 42, true);
+    const name = dec.decode(u8.subarray(p + 46, p + 46 + nlen));
+    p += 46 + nlen + xlen + clen;
+    const ds = loff + 30 + dv.getUint16(loff + 26, true) + dv.getUint16(loff + 28, true);
+    const raw = u8.slice(ds, ds + csize);
+    let bytes = raw;
+    if (method === 8) bytes = new Uint8Array(await new Response(new Blob([raw]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).arrayBuffer());
+    files[name] = dec.decode(bytes);
+  }
+  const sst = [];
+  if (files['xl/sharedStrings.xml']) for (const m of files['xl/sharedStrings.xml'].matchAll(/<si>([\s\S]*?)<\/si>/g)) sst.push(unesc([...m[1].matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)].map(x => x[1]).join('')));
+  const names = Object.keys(files).filter(f => /^xl\/worksheets\/sheet\d+\.xml$/.test(f)).sort((a, b) => parseInt(a.match(/\d+/)[0]) - parseInt(b.match(/\d+/)[0]));
+  return names.map(f => {
+    const rows = [];
+    for (const c of files[f].matchAll(/<c r="([A-Z]+)(\d+)"([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
+      const col = [...c[1]].reduce((a, ch) => a * 26 + ch.charCodeAt(0) - 64, 0) - 1;
+      const r = parseInt(c[2]) - 1, attrs = c[3], body = c[4] || '';
+      const t = (attrs.match(/t="(\w+)"/) || [])[1];
+      let v = '';
+      if (t === 'inlineStr') v = unesc([...body.matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)].map(x => x[1]).join(''));
+      else { const vm = body.match(/<v>([\s\S]*?)<\/v>/); if (vm) v = t === 's' ? (sst[+vm[1]] ?? '') : unesc(vm[1]); }
+      rows[r] = rows[r] || []; rows[r][col] = v;
+    }
+    return Array.from(rows, r => Array.from(r || [], x => x ?? ''));
+  });
+}
+function bacaFile(f){
+  if (!f) return;
+  const rd = new FileReader();
+  if (/\.(xlsx|xls)$/i.test(f.name)) {
+    rd.onload = () => {
+      try {
+        readXlsx(rd.result).then(sheets => { $('#msg').textContent = importRows(sheets); })
+          .catch(e => { $('#msg').textContent = 'File Excel tidak dapat dibaca: ' + (e.message || e) + '. Coba simpan ulang sebagai .xlsx atau .csv.'; });
+      } catch (e) { $('#msg').textContent = 'File tidak dapat dibaca: ' + (e.message || e); }
+    };
+    rd.readAsArrayBuffer(f);
+  } else {
+    rd.onload = () => { $('#msg').textContent = parseImport(rd.result); };
+    rd.readAsText(f);
+  }
+}
+
+function laporanHtml(){
+  const lap = S.laporan || [];
+  if (!lap.length) return '';
+  return '<div class="card"><b>Laporan dari siswa (' + lap.length + ')</b>' + lap.map(x => `<div class="row"><div>${esc(x.nama)} <span class="sub">${esc(x.nisn)} · ${esc(x.kelas || '-')}</span><br><span class="sub">Soal: ${esc(x.soal)} · ${fmt(x.t)}</span></div><span class="tag off">Ingin buka lagi</span></div>`).join('') + '<p class="sub">Centang "Izinkan buka ulang" pada siswa yang disetujui.</p></div>';
+}
+function toggleIzin(nisn, on){
+  nisn = String(nisn);
+  S.izin = (S.izin || []).filter(x => x !== nisn);
+  if (on) { S.izin.push(nisn); S.laporan = (S.laporan || []).filter(x => String(x.nisn) !== nisn); }
+  save(); render();
+}
+function pMonitor(){
+  const kelasList = [...new Set(S.students.map(s => s.kelas || 'Tanpa kelas'))].sort();
+  const html = kelasList.map(k => {
+    const sis = S.students.filter(s => (s.kelas || 'Tanpa kelas') === k);
+    const rows = sis.map(s => ({
+      s,
+      lg: S.logs.filter(l => l.type === 'login' && String(l.nisn) === String(s.nisn)).pop(),
+      ks: S.logs.filter(l => l.type === 'soal' && String(l.nisn) === String(s.nisn))
+    }));
+    const nLogin = rows.filter(r => r.lg).length, nKerja = rows.filter(r => r.ks.length).length;
+    return `<div class="card">
+      <div class="row" style="border:0;padding:0 0 6px"><b>Kelas ${esc(k)}</b>
+        <span class="tag">Login ${nLogin}/${sis.length} · Mengerjakan ${nKerja}</span></div>
+      ${rows.map(({s, lg, ks}) => `<div class="row">
+        <div>${esc(s.nama)} <span class="sub">${esc(s.nisn)}</span><br><label class="sub"><input type="checkbox" style="width:auto;margin:0 6px 0 0" ${(S.izin || []).includes(String(s.nisn)) ? 'checked' : ''} onchange="toggleIzin('${s.nisn}', this.checked)">Izinkan buka ulang</label>${(S.laporan || []).some(x => String(x.nisn) === String(s.nisn)) ? ' <span class="tag off">Lapor admin</span>' : ''}</div>
+        <div><span class="sub">Login: ${lg ? fmt(lg.t) : 'belum'}</span>
+          <span class="tag ${ks.length ? 'on' : ''}">${ks.length ? 'Buka soal ' + ks.length + 'x' : 'Belum mengerjakan'}</span></div>
+      </div>`).join('')}
+    </div>`;
+  }).join('');
+  $('#pg').innerHTML = `<h2>Daftar Login & Mengerjakan per Kelas</h2>${laporanHtml()}
+    ${html || '<div class="card">Belum ada siswa. Import siswa terlebih dahulu.</div>'}
+    <button class="btn ghost" onclick="render()">Muat ulang</button>`;
+}
+
+function setBg(f){
+  if (!f) return;
+  const url = URL.createObjectURL(f), img = new Image();
+  img.onload = () => {
+    const sc = Math.min(1, 1024 / img.width);
+    const c = document.createElement('canvas');
+    c.width = Math.round(img.width * sc); c.height = Math.round(img.height * sc);
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    URL.revokeObjectURL(url);
+    const data = c.toDataURL('image/jpeg', 0.6);
+    if (data.length > 200000) { $('#msg').textContent = 'Foto terlalu besar, pilih foto lain.'; return; }
+    S.bg = data; save(); render();
+  };
+  img.src = url;
+}
+
+(async () => {
+  try {
+    const db = await claude.use('db');
+    if (db) {
+      doc = db.doc('app/state');
+      doc.onSnapshot(snap => {
+        const d = snap && (typeof snap.data === 'function' ? snap.data() : snap.data);
+        if (d && typeof d === 'object') S = JSON.parse(JSON.stringify({students:[], soal:[], logs:[], bg:'', izin:[], laporan:[], ...d}));
+        if (!document.activeElement || document.activeElement === document.body) render();
+      }, e => console.error(e));
+    }
+  } catch (e) { console.error(e); }
+  try { const s = JSON.parse(localStorage.getItem(SESS) || 'null'); if (s) me = s; } catch (e) {}
+  render();
+  setInterval(() => {
+    if (me && (page === 'home' || page === 'soal') && !document.activeElement?.matches('input,textarea')) render();
+  }, 30000);
+})();
+</script>
+</body>
+</html>
